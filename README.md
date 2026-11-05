@@ -1,35 +1,70 @@
 # SECRET ROOM — Telegram bots
 
-Автономный Node.js-процесс для BotHost: бот-переходник, бот платных подписок, Crypto Pay, автоматическая выдача приглашения и удаление после окончания подписки.
+Автономный Node.js-процесс для BotHost: бот-переходник, бот платных подписок, Crypto Pay + BigPay (RUB), автоматическая выдача приглашения и удаление после окончания подписки.
 
-Команда запуска: `npm run bot:start`. Переменные окружения перечислены в `.env.example`; токены хранятся только в настройках хостинга.
+Команда запуска: `npm run bot:start` (или `node bot.js`). Переменные окружения перечислены в `.env.example`; токены хранятся только в настройках хостинга.
 
 Bot: https://t.me/Secretroom2_app
 
-`/start` in a private chat returns a greeting and one button, «🔐 Войти в канал».
-The invitation is configured outside the source. No user database or broadcasts.
+## Тарифы
 
-## Runtime configuration
+| План | USD (Crypto Pay) | RUB (BigPay) |
+|------|------------------|--------------|
+| 7 дней | $5 | 299 ₽ |
+| Месяц | $9 | 699 ₽ |
+| 3 месяца | $20 | 1799 ₽ |
+| Навсегда | $35 | 2990 ₽ |
 
-Set both values as Sites secrets, then deploy:
-- `TELEGRAM_WEBHOOK_SECRET`: random URL-safe secret, 32–256 characters.
-- `TELEGRAM_CHANNEL_URL`: the owner's exact Telegram invitation.
+## Оплата
 
-The bot token is used only for Telegram `setWebhook`; the deployed code does not need it.
-The handler uses the documented webhook reply mechanism (`method: sendMessage`).
+1. **Crypto Pay** — инвойс в USD, USDT и другие активы Crypto Bot.
+2. **BigPay (RUB)** — три кнопки в боте ([docs](https://bigpay.site/docs)):
+   - **СБП и др.** — `POST /api/v1/create_paylink`; плательщик выбирает метод на `/pay/{external_id}`
+   - **СБП напрямую** — `create_paylink` + `get_requisites` с `type: "sbp"`
+   - **Карта (Stripe)** — `POST /api/v1/create_stripe_paylink` (нужен включённый Stripe у магазина)
 
-## Activation
+`get_requisites` `type`: `sbp` | `crypto` | `cryptobot` | `stripe`. Нативный C2C / SberPay на форме BigPay пока недоступен; карты — только через Stripe.
 
-Webhook: `POST /telegram/webhook`. Telegram must reach the HTTPS endpoint without ChatGPT sign-in. A new Site remains owner-private until the owner authorizes changing access.
+Статусы: `PENDING` → `CONFIRMED` → `COMPLETED`. Бот поллит `check_status` (как Crypto Pay) и принимает shop webhook; fulfilment общий.
 
-After access is configured, call Telegram `setWebhook` with the deployed URL, matching `secret_token`, `allowed_updates: ["message"]`, `max_connections: 10`, and `drop_pending_updates: false`.
-Never put the bot token, invitation or webhook secret into source, logs or public pages.
+После `COMPLETED` бот выдаёт одноразовый инвайт в канал так же, как при крипто-оплате.
 
-The handler authenticates the request, ignores groups and unrelated commands, caps body size and stores no chat IDs or messages. Webhook replies do not provide a separate delivery receipt. Replayed requests may repeat the welcome; no persistent deduplication store is used.
+## Secrets на BotHost
 
-## Checks
+Обязательные:
 
-`node --experimental-strip-types --test tests/telegram.test.mjs`
+- `GATEWAY_BOT_TOKEN`
+- `SUBSCRIPTION_BOT_TOKEN`
+- `CRYPTO_PAY_API_TOKEN`
+- `PAID_CHANNEL_ID`
 
-Build and publish using the Sites skill's normal source workflow.
-Official API: https://core.telegram.org/bots/api#making-requests-when-getting-updates
+Для RUB / BigPay:
+
+- `BIGPAY_API_TOKEN` — API-ключ магазина (`sk_live_...` / `sk_test_...`), заголовок `X-API-Key` (также поддерживается `Authorization: Bearer …`). Только из env, не коммитить.
+- `BIGPAY_WEBHOOK_SECRET` — необязательный секрет в пути webhook (`/bigpay/webhook/<secret>`), чтобы чужие POST не принимались. Тот же путь укажите в кабинете BigPay → webhook магазина.
+- `PUBLIC_BASE_URL` — публичный HTTPS origin BotHost (без слэша в конце), чтобы в логах подсказать полный URL webhook.
+
+Пример webhook URL для кабинета BigPay:
+
+`https://<your-bothost-host>/bigpay/webhook/<BIGPAY_WEBHOOK_SECRET>`
+
+Опубликованные docs BigPay не описывают HMAC подписи webhook. Бот при любом callback заново проверяет платёж через `POST /api/v1/check_status` и активирует доступ только при `COMPLETED` + совпадении суммы/валюты. Параллельно раз в 30 с идёт polling (как у Crypto Pay).
+
+Опциональные каналы / пути:
+
+- `MAIN_CHANNEL_URL`, `SAFE_CHANNEL_URL`, `SUBSCRIPTION_BOT_URL`
+- `DATA_FILE`, `PORT`
+
+## API BigPay (используется ботом)
+
+Base: `https://bigpay.site/api` — все методы `POST` JSON, auth `X-API-Key` из `BIGPAY_API_TOKEN`.
+
+- `POST /v1/create_paylink` — RUB paylink (chooser)
+- `POST /v1/get_requisites` — прямые реквизиты (`type: sbp` и др.)
+- `POST /v1/create_stripe_paylink` — Stripe Checkout
+- `POST /v1/check_status` — статус
+- Webhook магазина → `POST /bigpay/webhook[...]` на этом сервисе
+
+## Health
+
+`GET /health` — `{ ok, bigpay, webhookPath }`.

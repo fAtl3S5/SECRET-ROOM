@@ -10,12 +10,18 @@ for (const key of required) if (!process.env[key]) throw new Error(`Missing envi
 const GATEWAY_TOKEN = process.env.GATEWAY_BOT_TOKEN;
 const SUBSCRIPTION_TOKEN = process.env.SUBSCRIPTION_BOT_TOKEN;
 const CRYPTO_TOKEN = process.env.CRYPTO_PAY_API_TOKEN;
+const BIGPAY_TOKEN = process.env.BIGPAY_API_TOKEN || "";
+const BIGPAY_WEBHOOK_SECRET = process.env.BIGPAY_WEBHOOK_SECRET || "";
 const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
 const MAIN_CHANNEL_URL = process.env.MAIN_CHANNEL_URL || "https://t.me/+4H3FZze1XTdiMmJi";
 const SAFE_CHANNEL_URL = process.env.SAFE_CHANNEL_URL || "https://t.me/blessedbabes";
 const SUBSCRIPTION_BOT_URL = process.env.SUBSCRIPTION_BOT_URL || "https://t.me/srprivatee_bot?start=gateway";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
 const PORT = Number(process.env.PORT || 3000);
 const DATA_FILE = resolve(process.env.DATA_FILE || "./data/subscriptions.json");
+const BIGPAY_API_BASE = "https://bigpay.site/api";
+const BIGPAY_SITE = "https://bigpay.site";
+const BIGPAY_ENABLED = Boolean(BIGPAY_TOKEN);
 
 const PLANS = {
   week: { title: "7 дней", usd: "5", rub: 299, ms: 7 * 86400_000 },
@@ -92,6 +98,33 @@ async function cryptoPay(method, body = {}) {
   return result.result;
 }
 
+async function bigPay(method, body = {}) {
+  if (!BIGPAY_ENABLED) throw new Error("BigPay is not configured");
+  const response = await fetch(`${BIGPAY_API_BASE}/v1/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": BIGPAY_TOKEN },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result.success === false) {
+    const detail = result.message || result.errors || response.status;
+    throw new Error(`BigPay ${method}: ${detail}`);
+  }
+  return result;
+}
+
+function bigPayPayUrl(paylink) {
+  if (!paylink) throw new Error("BigPay paylink missing");
+  if (/^https?:\/\//i.test(paylink)) return paylink;
+  return `${BIGPAY_SITE}${paylink.startsWith("/") ? paylink : `/${paylink}`}`;
+}
+
+function bigPayWebhookPath() {
+  return BIGPAY_WEBHOOK_SECRET
+    ? `/bigpay/webhook/${encodeURIComponent(BIGPAY_WEBHOOK_SECRET)}`
+    : "/bigpay/webhook";
+}
+
 async function sendGatewayMenu(chatId) {
   await telegram(GATEWAY_TOKEN, "sendMessage", {
     chat_id: chatId, text: "🔐 SECRET ROOM\n\nВыбери, куда перейти:", link_preview_options: { is_disabled: true },
@@ -104,16 +137,37 @@ async function sendGatewayMenu(chatId) {
 }
 
 async function sendPlans(chatId) {
+  const paymentHint = BIGPAY_ENABLED
+    ? "Оплата: ₽ через BigPay (СБП и другие доступные методы) или крипта через Crypto Pay."
+    : "Оплата через Crypto Pay — доступны USDT и другие криптовалюты.";
   await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
     chat_id: chatId,
-    text: "🔐 SECRET ROOM\n\nВыбери период подписки. Оплата через Crypto Pay — доступны USDT и другие криптовалюты.",
+    text: `🔐 SECRET ROOM\n\nВыбери период подписки. ${paymentHint}`,
     reply_markup: { inline_keyboard: Object.entries(PLANS).map(([id, plan]) => [{
       text: `${plan.title} · $${plan.usd} / ${plan.rub} ₽`, callback_data: `buy:${id}`,
     }]) },
   });
 }
 
-async function createInvoice(userId, planId) {
+async function sendPaymentMethodChoice(chatId, planId) {
+  const plan = PLANS[planId];
+  if (!plan) throw new Error("Unknown plan");
+  const rows = [];
+  if (BIGPAY_ENABLED) {
+    // Primary: BigPay paylink (payer picks СБП / other enabled methods on /pay/{external_id})
+    rows.push([{ text: `Оплатить ${plan.rub} ₽ (СБП и др.)`, callback_data: `pay:bigpay:${planId}` }]);
+    rows.push([{ text: `СБП напрямую · ${plan.rub} ₽`, callback_data: `pay:sbp:${planId}` }]);
+    rows.push([{ text: `Карта (Stripe) · ${plan.rub} ₽`, callback_data: `pay:stripe:${planId}` }]);
+  }
+  rows.push([{ text: `Оплатить $${plan.usd} криптой`, callback_data: `pay:crypto:${planId}` }]);
+  await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+    chat_id: chatId,
+    text: `SECRET ROOM · ${plan.title}\n\nВыбери способ оплаты:`,
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function createCryptoInvoice(userId, planId) {
   const plan = PLANS[planId];
   if (!plan) throw new Error("Unknown plan");
   const orderId = crypto.randomUUID();
@@ -123,9 +177,82 @@ async function createInvoice(userId, planId) {
     description: `SECRET ROOM · ${plan.title}`, payload: orderId,
     allow_anonymous: false, allow_comments: false, expires_in: 3600,
   });
-  state.orders[orderId] = { id: orderId, invoiceId: invoice.invoice_id, userId, planId, amount: plan.usd, status: "pending", createdAt: Date.now() };
+  state.orders[orderId] = {
+    id: orderId, provider: "crypto", invoiceId: invoice.invoice_id, userId, planId,
+    amount: plan.usd, currency: "USD", status: "pending", createdAt: Date.now(),
+  };
   await saveState();
   return invoice.bot_invoice_url;
+}
+
+async function storeBigPayOrder({ orderId, payment, userId, planId, method }) {
+  const plan = PLANS[planId];
+  state.orders[orderId] = {
+    id: orderId,
+    provider: "bigpay",
+    method,
+    paymentId: payment.id,
+    externalId: payment.external_id,
+    userId,
+    planId,
+    amount: plan.rub,
+    currency: "RUB",
+    status: "pending",
+    createdAt: Date.now(),
+    expiresAt: payment.expires_at || null,
+  };
+  await saveState();
+}
+
+async function createBigPayInvoice(userId, planId, method = "paylink") {
+  const plan = PLANS[planId];
+  if (!plan) throw new Error("Unknown plan");
+  const orderId = crypto.randomUUID();
+  const body = {
+    amount: plan.rub,
+    currency: "RUB",
+    description: `SECRET ROOM · ${plan.title}`,
+    ttlMinutes: 60,
+    metadata: { orderId, userId: String(userId), planId, method },
+  };
+
+  if (method === "stripe") {
+    const payment = await bigPay("create_stripe_paylink", body);
+    await storeBigPayOrder({ orderId, payment, userId, planId, method: "stripe" });
+    return {
+      url: payment.paylink || payment.requisites?.value || bigPayPayUrl(payment.paylink),
+      button: "Оплатить картой",
+      hint: "Оплата картой через Stripe Checkout.",
+    };
+  }
+
+  const payment = await bigPay("create_paylink", body);
+  await storeBigPayOrder({ orderId, payment, userId, planId, method: method === "sbp" ? "sbp" : "paylink" });
+
+  if (method === "sbp") {
+    // get_requisites returns PaymentResponseDto with requisites: { type, label, value }
+    const detailed = await bigPay("get_requisites", { external_id: payment.external_id, type: "sbp" });
+    const sbpValue = detailed?.requisites?.value || detailed?.value;
+    if (sbpValue && /^https?:\/\//i.test(sbpValue)) {
+      return {
+        url: sbpValue,
+        button: "Оплатить через СБП",
+        hint: "Прямая оплата через СБП. После перевода доступ придёт автоматически.",
+      };
+    }
+    // Fallback to chooser paylink if requisites are not a clickable URL.
+    return {
+      url: bigPayPayUrl(detailed?.paylink || payment.paylink),
+      button: "Оплатить через СБП",
+      hint: "Открой страницу оплаты и выбери СБП.",
+    };
+  }
+
+  return {
+    url: bigPayPayUrl(payment.paylink),
+    button: "Оплатить в ₽",
+    hint: "На странице BigPay доступны СБП и другие включённые для магазина методы (карта — через Stripe, если подключён).",
+  };
 }
 
 async function activateOrder(order) {
@@ -155,14 +282,54 @@ async function activateOrder(order) {
   await saveState();
 }
 
+function findOrderByBigPayExternalId(externalId) {
+  if (!externalId) return null;
+  return Object.values(state.orders).find(
+    (order) => order.provider === "bigpay" && order.externalId === externalId,
+  ) || null;
+}
+
+async function verifyAndActivateBigPayOrder(order) {
+  if (!order || order.status !== "pending" || order.provider !== "bigpay") return false;
+  const status = await bigPay("check_status", { external_id: order.externalId });
+  if (status.external_id && status.external_id !== order.externalId) return false;
+  if (Number(status.amount) !== Number(order.amount)) {
+    console.error("BigPay amount mismatch for order", order.id);
+    return false;
+  }
+  if (String(status.currency || "RUB").toUpperCase() !== "RUB") {
+    console.error("BigPay currency mismatch for order", order.id);
+    return false;
+  }
+  if (status.status === "COMPLETED") {
+    await activateOrder(order);
+    return true;
+  }
+  if (["EXPIRED", "CANCELLED"].includes(status.status)) {
+    order.status = status.status.toLowerCase();
+    await saveState();
+  }
+  return false;
+}
+
 async function checkPayments() {
   for (const order of Object.values(state.orders).filter((item) => item.status === "pending")) {
     try {
+      if (order.provider === "bigpay") {
+        await verifyAndActivateBigPayOrder(order);
+        continue;
+      }
       const result = await cryptoPay("getInvoices", { invoice_ids: String(order.invoiceId) });
       const invoice = result.items?.[0];
-      if (invoice?.status === "paid" && invoice.payload === order.id && Number(invoice.amount) === Number(order.amount)) await activateOrder(order);
-      else if (["expired", "cancelled"].includes(invoice?.status)) { order.status = invoice.status; await saveState(); }
-    } catch (error) { console.error("Invoice check failed:", error.message); }
+      if (invoice?.status === "paid" && invoice.payload === order.id && Number(invoice.amount) === Number(order.amount)) {
+        await activateOrder(order);
+      } else if (["expired", "cancelled"].includes(invoice?.status)) {
+        order.status = invoice.status;
+        await saveState();
+      }
+    } catch (error) {
+      console.error("Invoice check failed:", error.message);
+    }
   }
 }
 
@@ -192,21 +359,74 @@ async function handleGatewayUpdate(update) {
 
 async function handleSubscriptionUpdate(update) {
   const message = update.message;
-  if (message?.chat?.type === "private" && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text || "")) { await sendPlans(message.chat.id); return; }
+  if (message?.chat?.type === "private" && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text || "")) {
+    await sendPlans(message.chat.id);
+    return;
+  }
+
   const query = update.callback_query;
-  const match = /^buy:(week|month|quarter|lifetime)$/.exec(query?.data || "");
-  if (!match) return;
+  if (!query?.data) return;
+
+  const buyMatch = /^buy:(week|month|quarter|lifetime)$/.exec(query.data);
+  if (buyMatch) {
+    try {
+      if (BIGPAY_ENABLED) {
+        await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
+        await sendPaymentMethodChoice(query.from.id, buyMatch[1]);
+      } else {
+        await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: "Создаю счёт…" });
+        const url = await createCryptoInvoice(query.from.id, buyMatch[1]);
+        await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+          chat_id: query.from.id,
+          text: `SECRET ROOM · ${PLANS[buyMatch[1]].title}\nЦена: $${PLANS[buyMatch[1]].usd}. После оплаты доступ придёт автоматически.`,
+          reply_markup: { inline_keyboard: [[{ text: "Оплатить криптовалютой", url }]] },
+        });
+      }
+    } catch (error) {
+      console.error("Plan selection failed:", error.message);
+      await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: query.from.id, text: "Не удалось открыть оплату. Попробуй немного позже." });
+    }
+    return;
+  }
+
+  const payMatch = /^pay:(crypto|bigpay|sbp|stripe):(week|month|quarter|lifetime)$/.exec(query.data);
+  if (!payMatch) return;
+
+  const [, provider, planId] = payMatch;
   await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: "Создаю счёт…" });
   try {
-    const url = await createInvoice(query.from.id, match[1]);
+    if (provider === "crypto") {
+      const url = await createCryptoInvoice(query.from.id, planId);
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+        chat_id: query.from.id,
+        text: `SECRET ROOM · ${PLANS[planId].title}\nЦена: $${PLANS[planId].usd}. После оплаты доступ придёт автоматически.`,
+        reply_markup: { inline_keyboard: [[{ text: "Оплатить криптовалютой", url }]] },
+      });
+      return;
+    }
+
+    const method = provider === "bigpay" ? "paylink" : provider;
+    const invoice = await createBigPayInvoice(query.from.id, planId, method);
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
       chat_id: query.from.id,
-      text: `SECRET ROOM · ${PLANS[match[1]].title}\nЦена: $${PLANS[match[1]].usd}. После оплаты доступ придёт автоматически.`,
-      reply_markup: { inline_keyboard: [[{ text: "Оплатить криптовалютой", url }]] },
+      text: [
+        `SECRET ROOM · ${PLANS[planId].title}`,
+        `Цена: ${PLANS[planId].rub} ₽.`,
+        invoice.hint,
+        "После успешной оплаты доступ придёт автоматически.",
+      ].join("\n"),
+      reply_markup: { inline_keyboard: [[{ text: invoice.button, url: invoice.url }]] },
     });
   } catch (error) {
     console.error("Invoice creation failed:", error.message);
-    await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: query.from.id, text: "Не удалось создать счёт. Попробуй немного позже." });
+    const stripeHint = provider === "stripe"
+      ? " Карта через Stripe доступна только если шлюз включён у магазина BigPay."
+      : "";
+    await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+      chat_id: query.from.id,
+      text: `Не удалось создать счёт.${stripeHint} Попробуй другой способ или немного позже.`,
+    });
   }
 }
 
@@ -226,6 +446,124 @@ async function pollingLoop(token, handler, label) {
   }
 }
 
+function readRequestBody(request, limit = 1_000_000) {
+  return new Promise((resolveBody, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("Body too large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => resolveBody(Buffer.concat(chunks)));
+    request.on("error", reject);
+  });
+}
+
+function extractBigPayExternalId(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  return (
+    payload.external_id
+    || payload.externalId
+    || payload.data?.external_id
+    || payload.payment?.external_id
+    || payload.payload?.external_id
+    || null
+  );
+}
+
+function extractBigPayStatus(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  return payload.status || payload.data?.status || payload.payment?.status || null;
+}
+
+async function handleBigPayWebhook(request, response, pathSecret) {
+  if (!BIGPAY_ENABLED) {
+    response.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: false, error: "bigpay_disabled" }));
+    return;
+  }
+  if (BIGPAY_WEBHOOK_SECRET) {
+    if (!pathSecret || pathSecret !== BIGPAY_WEBHOOK_SECRET) {
+      response.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+  }
+
+  let payload = {};
+  try {
+    const raw = await readRequestBody(request);
+    if (raw.length) payload = JSON.parse(raw.toString("utf8"));
+  } catch {
+    response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: false, error: "invalid_json" }));
+    return;
+  }
+
+  const externalId = extractBigPayExternalId(payload);
+  if (!externalId) {
+    response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: false, error: "missing_external_id" }));
+    return;
+  }
+
+  const order = findOrderByBigPayExternalId(externalId);
+  if (!order) {
+    // Acknowledge unknown ids so BigPay does not retry forever for foreign events.
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true, ignored: true }));
+    return;
+  }
+
+  try {
+    // Docs do not publish a webhook HMAC scheme; always re-check via Merchant API before fulfilment.
+    const hint = extractBigPayStatus(payload);
+    if (!hint || String(hint).toUpperCase() === "COMPLETED" || String(hint).toUpperCase() === "CONFIRMED") {
+      await verifyAndActivateBigPayOrder(order);
+    }
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true }));
+  } catch (error) {
+    console.error("BigPay webhook failed:", error.message);
+    response.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: false }));
+  }
+}
+
+function createHttpServer() {
+  return http.createServer(async (request, response) => {
+    const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+    const webhookBase = "/bigpay/webhook";
+
+    if (request.method === "POST" && (url.pathname === webhookBase || url.pathname.startsWith(`${webhookBase}/`))) {
+      const pathSecret = url.pathname === webhookBase
+        ? ""
+        : decodeURIComponent(url.pathname.slice(webhookBase.length + 1));
+      await handleBigPayWebhook(request, response, pathSecret);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        ok: true,
+        service: "SECRET ROOM bot",
+        bigpay: BIGPAY_ENABLED,
+        webhookPath: BIGPAY_ENABLED ? bigPayWebhookPath() : null,
+      }));
+      return;
+    }
+
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true, service: "SECRET ROOM bot" }));
+  });
+}
+
 await acquireProcessLock();
 await loadState();
 await Promise.all([
@@ -233,10 +571,16 @@ await Promise.all([
   telegram(SUBSCRIPTION_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
 ]);
 
-http.createServer((_request, response) => {
-  response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify({ ok: true, service: "SECRET ROOM bot" }));
-}).listen(PORT, "0.0.0.0", () => console.log(`Health server listening on ${PORT}`));
+createHttpServer().listen(PORT, "0.0.0.0", () => {
+  console.log(`Health server listening on ${PORT}`);
+  if (BIGPAY_ENABLED) {
+    const path = bigPayWebhookPath();
+    const hint = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}${path}` : path;
+    console.log(`BigPay enabled; set shop webhook URL in cabinet to: ${hint}`);
+  } else {
+    console.log("BigPay disabled (BIGPAY_API_TOKEN not set); crypto-only mode");
+  }
+});
 
 setInterval(() => checkPayments().catch(console.error), 30_000);
 setInterval(() => expireSubscriptions().catch(console.error), 60_000);
