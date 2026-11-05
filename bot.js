@@ -1,5 +1,6 @@
 import http from "node:http";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import crypto from "node:crypto";
 
@@ -25,6 +26,31 @@ const PLANS = {
 
 let state = { orders: {}, access: {} };
 let writeQueue = Promise.resolve();
+let lockHandle;
+
+async function acquireProcessLock() {
+  const lockPath = resolve(dirname(DATA_FILE), "secret-room-bot.lock");
+  await mkdir(dirname(DATA_FILE), { recursive: true });
+  try {
+    lockHandle = await open(lockPath, "wx");
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    try {
+      const pid = Number((await readFile(lockPath, "utf8")).trim());
+      process.kill(pid, 0);
+      throw new Error(`Another SECRET ROOM process is already running (pid ${pid})`);
+    } catch (checkError) {
+      if (checkError?.code !== "ESRCH") throw checkError;
+      await unlink(lockPath);
+      lockHandle = await open(lockPath, "wx");
+    }
+  }
+  await lockHandle.writeFile(String(process.pid));
+  const release = async () => { try { await lockHandle.close(); await unlink(lockPath); } catch {} };
+  process.once("exit", () => { try { unlinkSync(lockPath); } catch {} });
+  process.once("SIGTERM", async () => { await release(); process.exit(0); });
+  process.once("SIGINT", async () => { await release(); process.exit(0); });
+}
 
 async function loadState() {
   try {
@@ -200,6 +226,7 @@ async function pollingLoop(token, handler, label) {
   }
 }
 
+await acquireProcessLock();
 await loadState();
 await Promise.all([
   telegram(GATEWAY_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
