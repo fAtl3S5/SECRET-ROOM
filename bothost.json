@@ -1,0 +1,5 @@
+{
+  "name": "secret-room-bot",
+  "runtime": "nodejs",
+  "start": "node bot.js"
+}
