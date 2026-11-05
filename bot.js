@@ -154,7 +154,10 @@ async function sendPaymentMethodChoice(chatId, planId) {
   if (!plan) throw new Error("Unknown plan");
   const rows = [];
   if (BIGPAY_ENABLED) {
-    rows.push([{ text: `Оплатить ${plan.rub} ₽ (СБП / карта и др.)`, callback_data: `pay:bigpay:${planId}` }]);
+    // Primary: BigPay paylink (payer picks СБП / other enabled methods on /pay/{external_id})
+    rows.push([{ text: `Оплатить ${plan.rub} ₽ (СБП и др.)`, callback_data: `pay:bigpay:${planId}` }]);
+    rows.push([{ text: `СБП напрямую · ${plan.rub} ₽`, callback_data: `pay:sbp:${planId}` }]);
+    rows.push([{ text: `Карта (Stripe) · ${plan.rub} ₽`, callback_data: `pay:stripe:${planId}` }]);
   }
   rows.push([{ text: `Оплатить $${plan.usd} криптой`, callback_data: `pay:crypto:${planId}` }]);
   await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
@@ -182,20 +185,12 @@ async function createCryptoInvoice(userId, planId) {
   return invoice.bot_invoice_url;
 }
 
-async function createBigPayInvoice(userId, planId) {
+async function storeBigPayOrder({ orderId, payment, userId, planId, method }) {
   const plan = PLANS[planId];
-  if (!plan) throw new Error("Unknown plan");
-  const orderId = crypto.randomUUID();
-  const payment = await bigPay("create_paylink", {
-    amount: plan.rub,
-    currency: "RUB",
-    description: `SECRET ROOM · ${plan.title}`,
-    ttlMinutes: 60,
-    metadata: { orderId, userId: String(userId), planId },
-  });
   state.orders[orderId] = {
     id: orderId,
     provider: "bigpay",
+    method,
     paymentId: payment.id,
     externalId: payment.external_id,
     userId,
@@ -207,7 +202,57 @@ async function createBigPayInvoice(userId, planId) {
     expiresAt: payment.expires_at || null,
   };
   await saveState();
-  return bigPayPayUrl(payment.paylink);
+}
+
+async function createBigPayInvoice(userId, planId, method = "paylink") {
+  const plan = PLANS[planId];
+  if (!plan) throw new Error("Unknown plan");
+  const orderId = crypto.randomUUID();
+  const body = {
+    amount: plan.rub,
+    currency: "RUB",
+    description: `SECRET ROOM · ${plan.title}`,
+    ttlMinutes: 60,
+    metadata: { orderId, userId: String(userId), planId, method },
+  };
+
+  if (method === "stripe") {
+    const payment = await bigPay("create_stripe_paylink", body);
+    await storeBigPayOrder({ orderId, payment, userId, planId, method: "stripe" });
+    return {
+      url: payment.paylink || payment.requisites?.value || bigPayPayUrl(payment.paylink),
+      button: "Оплатить картой",
+      hint: "Оплата картой через Stripe Checkout.",
+    };
+  }
+
+  const payment = await bigPay("create_paylink", body);
+  await storeBigPayOrder({ orderId, payment, userId, planId, method: method === "sbp" ? "sbp" : "paylink" });
+
+  if (method === "sbp") {
+    // get_requisites returns PaymentResponseDto with requisites: { type, label, value }
+    const detailed = await bigPay("get_requisites", { external_id: payment.external_id, type: "sbp" });
+    const sbpValue = detailed?.requisites?.value || detailed?.value;
+    if (sbpValue && /^https?:\/\//i.test(sbpValue)) {
+      return {
+        url: sbpValue,
+        button: "Оплатить через СБП",
+        hint: "Прямая оплата через СБП. После перевода доступ придёт автоматически.",
+      };
+    }
+    // Fallback to chooser paylink if requisites are not a clickable URL.
+    return {
+      url: bigPayPayUrl(detailed?.paylink || payment.paylink),
+      button: "Оплатить через СБП",
+      hint: "Открой страницу оплаты и выбери СБП.",
+    };
+  }
+
+  return {
+    url: bigPayPayUrl(payment.paylink),
+    button: "Оплатить в ₽",
+    hint: "На странице BigPay доступны СБП и другие включённые для магазина методы (карта — через Stripe, если подключён).",
+  };
 }
 
 async function activateOrder(order) {
@@ -345,7 +390,7 @@ async function handleSubscriptionUpdate(update) {
     return;
   }
 
-  const payMatch = /^pay:(crypto|bigpay):(week|month|quarter|lifetime)$/.exec(query.data);
+  const payMatch = /^pay:(crypto|bigpay|sbp|stripe):(week|month|quarter|lifetime)$/.exec(query.data);
   if (!payMatch) return;
 
   const [, provider, planId] = payMatch;
@@ -361,20 +406,27 @@ async function handleSubscriptionUpdate(update) {
       return;
     }
 
-    const url = await createBigPayInvoice(query.from.id, planId);
+    const method = provider === "bigpay" ? "paylink" : provider;
+    const invoice = await createBigPayInvoice(query.from.id, planId, method);
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
       chat_id: query.from.id,
       text: [
         `SECRET ROOM · ${PLANS[planId].title}`,
         `Цена: ${PLANS[planId].rub} ₽.`,
-        "На странице оплаты BigPay доступны СБП и другие включённые для магазина методы (в т.ч. карта через Stripe, если подключена).",
+        invoice.hint,
         "После успешной оплаты доступ придёт автоматически.",
       ].join("\n"),
-      reply_markup: { inline_keyboard: [[{ text: "Оплатить в ₽", url }]] },
+      reply_markup: { inline_keyboard: [[{ text: invoice.button, url: invoice.url }]] },
     });
   } catch (error) {
     console.error("Invoice creation failed:", error.message);
-    await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: query.from.id, text: "Не удалось создать счёт. Попробуй немного позже." });
+    const stripeHint = provider === "stripe"
+      ? " Карта через Stripe доступна только если шлюз включён у магазина BigPay."
+      : "";
+    await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+      chat_id: query.from.id,
+      text: `Не удалось создать счёт.${stripeHint} Попробуй другой способ или немного позже.`,
+    });
   }
 }
 

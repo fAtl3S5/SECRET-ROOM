@@ -18,12 +18,14 @@ Bot: https://t.me/Secretroom2_app
 ## Оплата
 
 1. **Crypto Pay** — инвойс в USD, USDT и другие активы Crypto Bot.
-2. **BigPay** — paylink в RUB. Плательщик выбирает способ на странице BigPay `/pay/{external_id}`:
-   - **СБП** (`sbp`)
-   - **Stripe / карта** (`stripe`), если шлюз включён у магазина
-   - on-chain crypto / CryptoBot / Telegram Stars — если включены в кабинете
+2. **BigPay (RUB)** — три кнопки в боте ([docs](https://bigpay.site/docs)):
+   - **СБП и др.** — `POST /api/v1/create_paylink`; плательщик выбирает метод на `/pay/{external_id}`
+   - **СБП напрямую** — `create_paylink` + `get_requisites` с `type: "sbp"`
+   - **Карта (Stripe)** — `POST /api/v1/create_stripe_paylink` (нужен включённый Stripe у магазина)
 
-Нативный C2C / SberPay на форме BigPay по их docs пока недоступен; карты идут через Stripe. Способ оплаты при `create_paylink` не передаётся — выбор на стороне UI BigPay ([документация](https://bigpay.site/docs)).
+`get_requisites` `type`: `sbp` | `crypto` | `cryptobot` | `stripe`. Нативный C2C / SberPay на форме BigPay пока недоступен; карты — только через Stripe.
+
+Статусы: `PENDING` → `CONFIRMED` → `COMPLETED`. Бот поллит `check_status` (как Crypto Pay) и принимает shop webhook; fulfilment общий.
 
 После `COMPLETED` бот выдаёт одноразовый инвайт в канал так же, как при крипто-оплате.
 
@@ -55,10 +57,12 @@ Bot: https://t.me/Secretroom2_app
 
 ## API BigPay (используется ботом)
 
-Base: `https://bigpay.site/api`
+Base: `https://bigpay.site/api` — все методы `POST` JSON, auth `X-API-Key` из `BIGPAY_API_TOKEN`.
 
-- `POST /v1/create_paylink` — создать RUB-платёж и paylink
-- `POST /v1/check_status` — статус (`PENDING` → `CONFIRMED` → `COMPLETED`)
+- `POST /v1/create_paylink` — RUB paylink (chooser)
+- `POST /v1/get_requisites` — прямые реквизиты (`type: sbp` и др.)
+- `POST /v1/create_stripe_paylink` — Stripe Checkout
+- `POST /v1/check_status` — статус
 - Webhook магазина → `POST /bigpay/webhook[...]` на этом сервисе
 
 ## Health
