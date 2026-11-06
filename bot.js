@@ -130,7 +130,7 @@ function bigPayWebhookPath() {
 
 function plansKeyboard() {
   return Object.entries(PLANS).map(([id, plan]) => [{
-    text: `${plan.title} · $${plan.usd} / ${plan.rub} ₽`,
+    text: plan.title,
     callback_data: `buy:${id}`,
   }]);
 }
@@ -193,12 +193,17 @@ async function sendGatewayMenu(chatId) {
 }
 
 async function sendPlans(chatId, messageId) {
+  const priceLines = Object.values(PLANS).map(
+    (plan) => `• ${plan.title} — $${plan.usd} / ${plan.rub} ₽`,
+  );
   const text = [
     "🔐 SECRET ROOM",
     "",
     "Добро пожаловать! Выбери период подписки, чтобы получить доступ в платный канал.",
     "",
-    "Цены указаны в USD и ₽. После выбора периода предложим способ оплаты.",
+    ...priceLines,
+    "",
+    "После выбора периода предложим способ оплаты.",
   ].join("\n");
   await showMenu(chatId, text, plansKeyboard(), messageId);
 }
