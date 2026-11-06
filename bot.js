@@ -23,12 +23,15 @@ const BIGPAY_API_BASE = "https://bigpay.site/api";
 const BIGPAY_SITE = "https://bigpay.site";
 const BIGPAY_ENABLED = Boolean(BIGPAY_TOKEN);
 
+// xtr ≈ plan.usd / 0.02 (Telegram Stars pack ~$0.02/★). Documented in README.
 const PLANS = {
-  week: { title: "7 дней", usd: "5", rub: 299, ms: 7 * 86400_000 },
-  month: { title: "Месяц", usd: "9", rub: 699, ms: 30 * 86400_000 },
-  quarter: { title: "3 месяца", usd: "20", rub: 1799, ms: 90 * 86400_000 },
-  lifetime: { title: "Навсегда", usd: "35", rub: 2990, ms: null },
+  week: { title: "7 дней", usd: "5", rub: 299, xtr: 250, ms: 7 * 86400_000 },
+  month: { title: "Месяц", usd: "9", rub: 699, xtr: 450, ms: 30 * 86400_000 },
+  quarter: { title: "3 месяца", usd: "20", rub: 1799, xtr: 1000, ms: 90 * 86400_000 },
+  lifetime: { title: "Навсегда", usd: "35", rub: 2990, xtr: 1750, ms: null },
 };
+
+const BACK_PLANS = { text: "« Назад", callback_data: "nav:plans" };
 
 let state = { orders: {}, access: {} };
 let writeQueue = Promise.resolve();
@@ -47,9 +50,9 @@ async function acquireProcessLock() {
       throw new Error(`Another SECRET ROOM process is already running (pid ${pid})`);
     } catch (checkError) {
       if (checkError?.code !== "ESRCH") throw checkError;
-      await unlink(lockPath);
-      lockHandle = await open(lockPath, "wx");
     }
+    await unlink(lockPath);
+    lockHandle = await open(lockPath, "wx");
   }
   await lockHandle.writeFile(String(process.pid));
   const release = async () => { try { await lockHandle.close(); await unlink(lockPath); } catch {} };
@@ -125,6 +128,59 @@ function bigPayWebhookPath() {
     : "/bigpay/webhook";
 }
 
+function plansKeyboard() {
+  return Object.entries(PLANS).map(([id, plan]) => [{
+    text: `${plan.title} · $${plan.usd} / ${plan.rub} ₽`,
+    callback_data: `buy:${id}`,
+  }]);
+}
+
+function paymentMethodsKeyboard(planId) {
+  const plan = PLANS[planId];
+  const rows = [
+    [{ text: `Крипта · Crypto Pay · $${plan.usd}`, callback_data: `pay:crypto:${planId}` }],
+  ];
+  if (BIGPAY_ENABLED) {
+    rows.push([{ text: `Рубли · BigPay · ${plan.rub} ₽`, callback_data: `nav:rub:${planId}` }]);
+  }
+  rows.push([{ text: `Telegram Stars · ${plan.xtr} ⭐`, callback_data: `pay:stars:${planId}` }]);
+  rows.push([BACK_PLANS]);
+  return rows;
+}
+
+function rubMethodsKeyboard(planId) {
+  const plan = PLANS[planId];
+  return [
+    [{ text: `СБП напрямую · ${plan.rub} ₽`, callback_data: `pay:sbp:${planId}` }],
+    [{ text: `Карта (Stripe) · ${plan.rub} ₽`, callback_data: `pay:stripe:${planId}` }],
+    [{ text: `СБП и другие методы · ${plan.rub} ₽`, callback_data: `pay:bigpay:${planId}` }],
+    [{ text: "« Назад", callback_data: `nav:pay:${planId}` }],
+  ];
+}
+
+async function showMenu(chatId, text, keyboard, messageId) {
+  const payload = {
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: keyboard },
+    link_preview_options: { is_disabled: true },
+  };
+  if (messageId) {
+    try {
+      await telegram(SUBSCRIPTION_TOKEN, "editMessageText", { ...payload, message_id: messageId });
+      return;
+    } catch (error) {
+      const description = String(error.message || "");
+      if (!/message is not modified/i.test(description)) {
+        // Fall through to a new message if the old one cannot be edited.
+      } else {
+        return;
+      }
+    }
+  }
+  await telegram(SUBSCRIPTION_TOKEN, "sendMessage", payload);
+}
+
 async function sendGatewayMenu(chatId) {
   await telegram(GATEWAY_TOKEN, "sendMessage", {
     chat_id: chatId, text: "🔐 SECRET ROOM\n\nВыбери, куда перейти:", link_preview_options: { is_disabled: true },
@@ -136,35 +192,40 @@ async function sendGatewayMenu(chatId) {
   });
 }
 
-async function sendPlans(chatId) {
-  const paymentHint = BIGPAY_ENABLED
-    ? "Оплата: ₽ через BigPay (СБП и другие доступные методы) или крипта через Crypto Pay."
-    : "Оплата через Crypto Pay — доступны USDT и другие криптовалюты.";
-  await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
-    chat_id: chatId,
-    text: `🔐 SECRET ROOM\n\nВыбери период подписки. ${paymentHint}`,
-    reply_markup: { inline_keyboard: Object.entries(PLANS).map(([id, plan]) => [{
-      text: `${plan.title} · $${plan.usd} / ${plan.rub} ₽`, callback_data: `buy:${id}`,
-    }]) },
-  });
+async function sendPlans(chatId, messageId) {
+  const text = [
+    "🔐 SECRET ROOM",
+    "",
+    "Добро пожаловать! Выбери период подписки, чтобы получить доступ в платный канал.",
+    "",
+    "Цены указаны в USD и ₽. После выбора периода предложим способ оплаты.",
+  ].join("\n");
+  await showMenu(chatId, text, plansKeyboard(), messageId);
 }
 
-async function sendPaymentMethodChoice(chatId, planId) {
+async function sendPaymentMethodChoice(chatId, planId, messageId) {
   const plan = PLANS[planId];
   if (!plan) throw new Error("Unknown plan");
-  const rows = [];
-  if (BIGPAY_ENABLED) {
-    // Primary: BigPay paylink (payer picks СБП / other enabled methods on /pay/{external_id})
-    rows.push([{ text: `Оплатить ${plan.rub} ₽ (СБП и др.)`, callback_data: `pay:bigpay:${planId}` }]);
-    rows.push([{ text: `СБП напрямую · ${plan.rub} ₽`, callback_data: `pay:sbp:${planId}` }]);
-    rows.push([{ text: `Карта (Stripe) · ${plan.rub} ₽`, callback_data: `pay:stripe:${planId}` }]);
-  }
-  rows.push([{ text: `Оплатить $${plan.usd} криптой`, callback_data: `pay:crypto:${planId}` }]);
-  await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
-    chat_id: chatId,
-    text: `SECRET ROOM · ${plan.title}\n\nВыбери способ оплаты:`,
-    reply_markup: { inline_keyboard: rows },
-  });
+  const text = [
+    `🔐 SECRET ROOM · ${plan.title}`,
+    `Цена: $${plan.usd} / ${plan.rub} ₽ / ${plan.xtr} ⭐`,
+    "",
+    "Выбери способ оплаты:",
+  ].join("\n");
+  await showMenu(chatId, text, paymentMethodsKeyboard(planId), messageId);
+}
+
+async function sendRubMethodChoice(chatId, planId, messageId) {
+  const plan = PLANS[planId];
+  if (!plan) throw new Error("Unknown plan");
+  if (!BIGPAY_ENABLED) throw new Error("BigPay is not configured");
+  const text = [
+    `🔐 SECRET ROOM · ${plan.title} · Оплата в ₽`,
+    `Сумма: ${plan.rub} ₽`,
+    "",
+    "Выбери метод BigPay:",
+  ].join("\n");
+  await showMenu(chatId, text, rubMethodsKeyboard(planId), messageId);
 }
 
 async function createCryptoInvoice(userId, planId) {
@@ -183,6 +244,33 @@ async function createCryptoInvoice(userId, planId) {
   };
   await saveState();
   return invoice.bot_invoice_url;
+}
+
+async function createStarsInvoice(userId, planId) {
+  const plan = PLANS[planId];
+  if (!plan) throw new Error("Unknown plan");
+  const orderId = crypto.randomUUID();
+  state.orders[orderId] = {
+    id: orderId,
+    provider: "stars",
+    userId,
+    planId,
+    amount: plan.xtr,
+    currency: "XTR",
+    status: "pending",
+    createdAt: Date.now(),
+  };
+  await saveState();
+  await telegram(SUBSCRIPTION_TOKEN, "sendInvoice", {
+    chat_id: userId,
+    title: `SECRET ROOM · ${plan.title}`,
+    description: `Подписка SECRET ROOM (${plan.title}). После оплаты доступ придёт автоматически.`,
+    payload: orderId,
+    currency: "XTR",
+    provider_token: "",
+    prices: [{ label: plan.title, amount: plan.xtr }],
+  });
+  return orderId;
 }
 
 async function storeBigPayOrder({ orderId, payment, userId, planId, method }) {
@@ -319,6 +407,14 @@ async function checkPayments() {
         await verifyAndActivateBigPayOrder(order);
         continue;
       }
+      if (order.provider === "stars") {
+        // Stars fulfilment is driven by successful_payment; expire stale unpaid invoices.
+        if (Date.now() - order.createdAt > 3600_000) {
+          order.status = "expired";
+          await saveState();
+        }
+        continue;
+      }
       const result = await cryptoPay("getInvoices", { invoice_ids: String(order.invoiceId) });
       const invoice = result.items?.[0];
       if (invoice?.status === "paid" && invoice.payload === order.id && Number(invoice.amount) === Number(order.amount)) {
@@ -357,8 +453,64 @@ async function handleGatewayUpdate(update) {
   if (message?.chat?.type === "private" && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text || "")) await sendGatewayMenu(message.chat.id);
 }
 
+async function handleStarsPayment(message) {
+  const payment = message.successful_payment;
+  if (!payment || payment.currency !== "XTR") return;
+  const order = state.orders[payment.invoice_payload];
+  if (!order || order.provider !== "stars") {
+    console.error("Stars payment for unknown order:", payment.invoice_payload);
+    return;
+  }
+  if (Number(payment.total_amount) !== Number(order.amount)) {
+    console.error("Stars amount mismatch for order", order.id);
+    return;
+  }
+  if (Number(order.userId) !== Number(message.from.id)) {
+    console.error("Stars payer mismatch for order", order.id);
+    return;
+  }
+  order.telegramPaymentChargeId = payment.telegram_payment_charge_id || null;
+  order.providerPaymentChargeId = payment.provider_payment_charge_id || null;
+  await saveState();
+  await activateOrder(order);
+}
+
+async function handlePreCheckoutQuery(query) {
+  const order = state.orders[query.invoice_payload];
+  const planOk = order
+    && order.provider === "stars"
+    && order.status === "pending"
+    && Number(order.userId) === Number(query.from.id)
+    && Number(order.amount) === Number(query.total_amount)
+    && String(query.currency).toUpperCase() === "XTR";
+
+  if (!planOk) {
+    await telegram(SUBSCRIPTION_TOKEN, "answerPreCheckoutQuery", {
+      pre_checkout_query_id: query.id,
+      ok: false,
+      error_message: "Счёт устарел или не найден. Начни заново: /start",
+    });
+    return;
+  }
+
+  await telegram(SUBSCRIPTION_TOKEN, "answerPreCheckoutQuery", {
+    pre_checkout_query_id: query.id,
+    ok: true,
+  });
+}
+
 async function handleSubscriptionUpdate(update) {
+  if (update.pre_checkout_query) {
+    await handlePreCheckoutQuery(update.pre_checkout_query);
+    return;
+  }
+
   const message = update.message;
+  if (message?.successful_payment) {
+    await handleStarsPayment(message);
+    return;
+  }
+
   if (message?.chat?.type === "private" && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text || "")) {
     await sendPlans(message.chat.id);
     return;
@@ -367,41 +519,71 @@ async function handleSubscriptionUpdate(update) {
   const query = update.callback_query;
   if (!query?.data) return;
 
-  const buyMatch = /^buy:(week|month|quarter|lifetime)$/.exec(query.data);
-  if (buyMatch) {
+  const chatId = query.message?.chat?.id || query.from.id;
+  const messageId = query.message?.message_id;
+
+  if (query.data === "nav:plans") {
+    await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
+    await sendPlans(chatId, messageId);
+    return;
+  }
+
+  const navPayMatch = /^nav:pay:(week|month|quarter|lifetime)$/.exec(query.data);
+  if (navPayMatch) {
+    await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
+    await sendPaymentMethodChoice(chatId, navPayMatch[1], messageId);
+    return;
+  }
+
+  const navRubMatch = /^nav:rub:(week|month|quarter|lifetime)$/.exec(query.data);
+  if (navRubMatch) {
     try {
-      if (BIGPAY_ENABLED) {
-        await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
-        await sendPaymentMethodChoice(query.from.id, buyMatch[1]);
-      } else {
-        await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: "Создаю счёт…" });
-        const url = await createCryptoInvoice(query.from.id, buyMatch[1]);
-        await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
-          chat_id: query.from.id,
-          text: `SECRET ROOM · ${PLANS[buyMatch[1]].title}\nЦена: $${PLANS[buyMatch[1]].usd}. После оплаты доступ придёт автоматически.`,
-          reply_markup: { inline_keyboard: [[{ text: "Оплатить криптовалютой", url }]] },
-        });
-      }
+      await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
+      await sendRubMethodChoice(chatId, navRubMatch[1], messageId);
     } catch (error) {
-      console.error("Plan selection failed:", error.message);
+      console.error("RUB menu failed:", error.message);
       await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
-      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: query.from.id, text: "Не удалось открыть оплату. Попробуй немного позже." });
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: "Оплата в рублях сейчас недоступна. Выбери другой способ.",
+      });
     }
     return;
   }
 
-  const payMatch = /^pay:(crypto|bigpay|sbp|stripe):(week|month|quarter|lifetime)$/.exec(query.data);
+  const buyMatch = /^buy:(week|month|quarter|lifetime)$/.exec(query.data);
+  if (buyMatch) {
+    try {
+      await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id });
+      await sendPaymentMethodChoice(chatId, buyMatch[1], messageId);
+    } catch (error) {
+      console.error("Plan selection failed:", error.message);
+      await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: chatId, text: "Не удалось открыть оплату. Попробуй немного позже." });
+    }
+    return;
+  }
+
+  const payMatch = /^pay:(crypto|bigpay|sbp|stripe|stars):(week|month|quarter|lifetime)$/.exec(query.data);
   if (!payMatch) return;
 
   const [, provider, planId] = payMatch;
   await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: "Создаю счёт…" });
   try {
+    if (provider === "stars") {
+      await createStarsInvoice(query.from.id, planId);
+      return;
+    }
+
     if (provider === "crypto") {
       const url = await createCryptoInvoice(query.from.id, planId);
       await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
         chat_id: query.from.id,
         text: `SECRET ROOM · ${PLANS[planId].title}\nЦена: $${PLANS[planId].usd}. После оплаты доступ придёт автоматически.`,
-        reply_markup: { inline_keyboard: [[{ text: "Оплатить криптовалютой", url }]] },
+        reply_markup: { inline_keyboard: [
+          [{ text: "Оплатить криптовалютой", url }],
+          [{ text: "« Назад", callback_data: `nav:pay:${planId}` }],
+        ] },
       });
       return;
     }
@@ -416,7 +598,10 @@ async function handleSubscriptionUpdate(update) {
         invoice.hint,
         "После успешной оплаты доступ придёт автоматически.",
       ].join("\n"),
-      reply_markup: { inline_keyboard: [[{ text: invoice.button, url: invoice.url }]] },
+      reply_markup: { inline_keyboard: [
+        [{ text: invoice.button, url: invoice.url }],
+        [{ text: "« Назад", callback_data: `nav:rub:${planId}` }],
+      ] },
     });
   } catch (error) {
     console.error("Invoice creation failed:", error.message);
@@ -426,6 +611,7 @@ async function handleSubscriptionUpdate(update) {
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
       chat_id: query.from.id,
       text: `Не удалось создать счёт.${stripeHint} Попробуй другой способ или немного позже.`,
+      reply_markup: { inline_keyboard: [[{ text: "« Назад", callback_data: `nav:pay:${planId}` }]] },
     });
   }
 }
@@ -434,7 +620,11 @@ async function pollingLoop(token, handler, label) {
   let offset = 0;
   while (true) {
     try {
-      const updates = await telegram(token, "getUpdates", { offset, timeout: 50, allowed_updates: ["message", "callback_query"] });
+      const updates = await telegram(token, "getUpdates", {
+        offset,
+        timeout: 50,
+        allowed_updates: ["message", "callback_query", "pre_checkout_query"],
+      });
       for (const update of updates) {
         offset = update.update_id + 1;
         try { await handler(update); } catch (error) { console.error(`${label} update failed:`, error.message); }
@@ -578,7 +768,7 @@ createHttpServer().listen(PORT, "0.0.0.0", () => {
     const hint = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}${path}` : path;
     console.log(`BigPay enabled; set shop webhook URL in cabinet to: ${hint}`);
   } else {
-    console.log("BigPay disabled (BIGPAY_API_TOKEN not set); crypto-only mode");
+    console.log("BigPay disabled (BIGPAY_API_TOKEN not set); crypto + Stars mode");
   }
 });
 
