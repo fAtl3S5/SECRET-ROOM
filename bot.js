@@ -136,24 +136,22 @@ function plansKeyboard() {
 }
 
 function paymentMethodsKeyboard(planId) {
-  const plan = PLANS[planId];
   const rows = [
-    [{ text: `Крипта · Crypto Pay · $${plan.usd}`, callback_data: `pay:crypto:${planId}` }],
+    [{ text: "Крипта", callback_data: `pay:crypto:${planId}` }],
   ];
   if (BIGPAY_ENABLED) {
-    rows.push([{ text: `Рубли · BigPay · ${plan.rub} ₽`, callback_data: `nav:rub:${planId}` }]);
+    rows.push([{ text: "Рубли", callback_data: `nav:rub:${planId}` }]);
   }
-  rows.push([{ text: `Telegram Stars · ${plan.xtr} ⭐`, callback_data: `pay:stars:${planId}` }]);
+  rows.push([{ text: "Telegram Stars", callback_data: `pay:stars:${planId}` }]);
   rows.push([BACK_PLANS]);
   return rows;
 }
 
 function rubMethodsKeyboard(planId) {
-  const plan = PLANS[planId];
   return [
-    [{ text: `СБП напрямую · ${plan.rub} ₽`, callback_data: `pay:sbp:${planId}` }],
-    [{ text: `Карта (Stripe) · ${plan.rub} ₽`, callback_data: `pay:stripe:${planId}` }],
-    [{ text: `СБП и другие методы · ${plan.rub} ₽`, callback_data: `pay:bigpay:${planId}` }],
+    [{ text: "СБП", callback_data: `pay:sbp:${planId}` }],
+    [{ text: "Карта", callback_data: `pay:stripe:${planId}` }],
+    [{ text: "Другие методы", callback_data: `pay:bigpay:${planId}` }],
     [{ text: "« Назад", callback_data: `nav:pay:${planId}` }],
   ];
 }
@@ -213,7 +211,6 @@ async function sendPaymentMethodChoice(chatId, planId, messageId) {
   if (!plan) throw new Error("Unknown plan");
   const text = [
     `🔐 SECRET ROOM · ${plan.title}`,
-    `Цена: $${plan.usd} / ${plan.rub} ₽ / ${plan.xtr} ⭐`,
     "",
     "Выбери способ оплаты:",
   ].join("\n");
@@ -225,10 +222,10 @@ async function sendRubMethodChoice(chatId, planId, messageId) {
   if (!plan) throw new Error("Unknown plan");
   if (!BIGPAY_ENABLED) throw new Error("BigPay is not configured");
   const text = [
-    `🔐 SECRET ROOM · ${plan.title} · Оплата в ₽`,
+    `🔐 SECRET ROOM · ${plan.title}`,
     `Сумма: ${plan.rub} ₽`,
     "",
-    "Выбери метод BigPay:",
+    "Выбери способ оплаты в рублях:",
   ].join("\n");
   await showMenu(chatId, text, rubMethodsKeyboard(planId), messageId);
 }
