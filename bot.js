@@ -9,7 +9,8 @@ for (const key of required) if (!process.env[key]) throw new Error(`Missing envi
 
 const GATEWAY_TOKEN = process.env.GATEWAY_BOT_TOKEN;
 const SUBSCRIPTION_TOKEN = process.env.SUBSCRIPTION_BOT_TOKEN;
-const CRYPTO_TOKEN = process.env.CRYPTO_PAY_API_TOKEN || "";\nconst CRYPTO_ENABLED = Boolean(CRYPTO_TOKEN);
+const CRYPTO_TOKEN = process.env.CRYPTO_PAY_API_TOKEN || "";
+const CRYPTO_ENABLED = Boolean(CRYPTO_TOKEN);
 const BIGPAY_TOKEN = process.env.BIGPAY_API_TOKEN || "";
 const BIGPAY_WEBHOOK_SECRET = process.env.BIGPAY_WEBHOOK_SECRET || "";
 const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
