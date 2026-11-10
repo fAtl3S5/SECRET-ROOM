@@ -137,11 +137,10 @@ function plansKeyboard() {
 }
 
 function paymentMethodsKeyboard(planId) {
-  const rows = [
-    [{ text: "Крипта", callback_data: `pay:crypto:${planId}` }],
-  ];
+  const rows = [];
+  if (CRYPTO_ENABLED) rows.push([{ text: "Крипта", callback_data: `pay:crypto:${planId}` }]);
   if (BIGPAY_ENABLED) {
-    rows.push([{ text: "Рубли", callback_data: `nav:rub:${planId}` }]);
+    rows.push([{ text: "Рубли / СБП", callback_data: `nav:rub:${planId}` }]);
   }
   rows.push([{ text: "Telegram Stars", callback_data: `pay:stars:${planId}` }]);
   rows.push([BACK_PLANS]);
