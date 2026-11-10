@@ -1,8 +1,8 @@
 # SECRET ROOM — Telegram bots
 
-Автономный Node.js-процесс для хостинга (BotHost/Render): бот-переходник, бот платных подписок, СБП через BigPay + Telegram Stars (`XTR`), а также Crypto Pay при наличии ключа. Автоматическая выдача приглашения и удаление после окончания подписки.
+Автономный Node.js-процесс для хостинга (Render): бот-переходник, бот платных подписок, СБП через BigPay + Telegram Stars (`XTR`), а также Crypto Pay при наличии ключа. Автоматическая выдача приглашения и удаление после окончания подписки.
 
-Команда запуска: `npm run bot:start` (или `node bot.js`). Переменные окружения перечислены в `.env.example`; токены хранятся только в настройках хостинга.
+Команда запуска на Render: `npm run bot:start` (или `node bot.js`). Переменные окружения перечислены в `.env.example`; токены хранятся только в Render → Environment.
 
 Bot: https://t.me/Secretroom2_app
 
@@ -64,7 +64,7 @@ Live (Render): https://secret-room-bot-qs4c.onrender.com — после merge в
 2. Если BotFather спрашивает про Payments / currency — для Stars выберите поток **Telegram Stars** / digital goods, **не** подключайте сторонний платежный провайдер ради `XTR`.
 3. После деплоя протестируйте оплату минимальным тарифом в тестовом чате: должен прийти нативный Stars-invoice, затем доступ в канал.
 
-## Secrets на хостинге
+## Переменные окружения Render
 
 Обязательные:
 
@@ -77,7 +77,7 @@ Live (Render): https://secret-room-bot-qs4c.onrender.com — после merge в
 
 - `BIGPAY_API_TOKEN` — API-ключ магазина (`sk_live_...` / `sk_test_...`), заголовок `X-API-Key` (также поддерживается `Authorization: Bearer …`). Только из env, не коммитить.
 - `BIGPAY_WEBHOOK_SECRET` — необязательный секрет в пути webhook (`/bigpay/webhook/<secret>`), чтобы чужие POST не принимались. Тот же путь укажите в кабинете BigPay → webhook магазина.
-- `PUBLIC_BASE_URL` — публичный HTTPS origin (без слэша в конце), чтобы в логах подсказать полный URL webhook. Для Render: `https://secret-room-bot-qs4c.onrender.com`.
+- `PUBLIC_BASE_URL` — публичный HTTPS origin Render (без слэша в конце), например `https://secret-room-bot-qs4c.onrender.com`.
 
 Для работы СБП обязательно добавьте `BIGPAY_API_TOKEN` и настройте webhook. Пример webhook URL для кабинета BigPay:
 
