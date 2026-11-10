@@ -193,16 +193,17 @@ async function sendGatewayMenu(chatId) {
 
 async function sendPlans(chatId, messageId) {
   const priceLines = Object.values(PLANS).map(
-    (plan) => `• ${plan.title} — $${plan.usd} / ${plan.rub} ₽`,
+    (plan) => `• ${plan.title} — ${plan.rub} ₽`,
   );
   const text = [
     "🔐 SECRET ROOM",
     "",
-    "Добро пожаловать! Выбери период подписки, чтобы получить доступ в платный канал.",
+    "Добро пожаловать в закрытый канал.",
+    "Выбери подходящий срок доступа:",
     "",
     ...priceLines,
     "",
-    "После выбора периода предложим способ оплаты.",
+    "После выбора тарифа выбери способ оплаты.",
   ].join("\n");
   if (!messageId) {
     try {
