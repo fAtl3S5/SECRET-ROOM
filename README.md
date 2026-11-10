@@ -1,6 +1,6 @@
 # SECRET ROOM — Telegram bots
 
-Автономный Node.js-процесс для BotHost / Render: бот-переходник, бот платных подписок, Crypto Pay + BigPay (RUB) + Telegram Stars (`XTR`), автоматическая выдача приглашения и удаление после окончания подписки.
+Автономный Node.js-процесс для хостинга (BotHost/Render): бот-переходник, бот платных подписок, СБП через BigPay + Telegram Stars (`XTR`), а также Crypto Pay при наличии ключа. Автоматическая выдача приглашения и удаление после окончания подписки.
 
 Команда запуска: `npm run bot:start` (или `node bot.js`). Переменные окружения перечислены в `.env.example`; токены хранятся только в настройках хостинга.
 
@@ -13,7 +13,7 @@ Live (Render): https://secret-room-bot-qs4c.onrender.com — после merge в
 Пошаговая навигация с кнопкой «Назад»:
 
 1. `/start` — короткое приветствие и выбор тарифа (USD + ₽ на кнопках).
-2. Выбор тарифа → способы оплаты: **крипта (Crypto Pay)**, **рубли (BigPay)**, **Telegram Stars**.
+2. Выбор тарифа → способы оплаты: **рубли / СБП (BigPay)**, **Telegram Stars**, и **крипта (Crypto Pay)** при наличии `CRYPTO_PAY_API_TOKEN`.
 3. Рубли → подменю BigPay: СБП напрямую, карта/Stripe, общий paylink.
 4. После оплаты любого метода — общий `activateOrder` (одноразовый инвайт).
 
@@ -70,7 +70,7 @@ Live (Render): https://secret-room-bot-qs4c.onrender.com — после merge в
 
 - `GATEWAY_BOT_TOKEN`
 - `SUBSCRIPTION_BOT_TOKEN`
-- `CRYPTO_PAY_API_TOKEN`
+- `CRYPTO_PAY_API_TOKEN` (необязателен; нужен только для криптооплаты)
 - `PAID_CHANNEL_ID`
 
 Для RUB / BigPay:
@@ -79,7 +79,7 @@ Live (Render): https://secret-room-bot-qs4c.onrender.com — после merge в
 - `BIGPAY_WEBHOOK_SECRET` — необязательный секрет в пути webhook (`/bigpay/webhook/<secret>`), чтобы чужие POST не принимались. Тот же путь укажите в кабинете BigPay → webhook магазина.
 - `PUBLIC_BASE_URL` — публичный HTTPS origin (без слэша в конце), чтобы в логах подсказать полный URL webhook. Для Render: `https://secret-room-bot-qs4c.onrender.com`.
 
-Пример webhook URL для кабинета BigPay:
+Для работы СБП обязательно добавьте `BIGPAY_API_TOKEN` и настройте webhook. Пример webhook URL для кабинета BigPay:
 
 `https://<your-host>/bigpay/webhook/<BIGPAY_WEBHOOK_SECRET>`
 
