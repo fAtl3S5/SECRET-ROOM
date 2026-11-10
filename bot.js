@@ -4,12 +4,12 @@ import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promis
 import { dirname, resolve } from "node:path";
 import crypto from "node:crypto";
 
-const required = ["GATEWAY_BOT_TOKEN", "SUBSCRIPTION_BOT_TOKEN", "CRYPTO_PAY_API_TOKEN", "PAID_CHANNEL_ID"];
+const required = ["GATEWAY_BOT_TOKEN", "SUBSCRIPTION_BOT_TOKEN", "PAID_CHANNEL_ID"];
 for (const key of required) if (!process.env[key]) throw new Error(`Missing environment variable: ${key}`);
 
 const GATEWAY_TOKEN = process.env.GATEWAY_BOT_TOKEN;
 const SUBSCRIPTION_TOKEN = process.env.SUBSCRIPTION_BOT_TOKEN;
-const CRYPTO_TOKEN = process.env.CRYPTO_PAY_API_TOKEN;
+const CRYPTO_TOKEN = process.env.CRYPTO_PAY_API_TOKEN || "";\nconst CRYPTO_ENABLED = Boolean(CRYPTO_TOKEN);
 const BIGPAY_TOKEN = process.env.BIGPAY_API_TOKEN || "";
 const BIGPAY_WEBHOOK_SECRET = process.env.BIGPAY_WEBHOOK_SECRET || "";
 const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
