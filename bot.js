@@ -768,10 +768,6 @@ function createHttpServer() {
 
 await acquireProcessLock();
 await loadState();
-await Promise.all([
-  telegram(GATEWAY_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
-  telegram(SUBSCRIPTION_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
-]);
 
 createHttpServer().listen(PORT, "0.0.0.0", () => {
   console.log(`Health server listening on ${PORT}`);
@@ -783,6 +779,11 @@ createHttpServer().listen(PORT, "0.0.0.0", () => {
     console.log("BigPay disabled (BIGPAY_API_TOKEN not set); crypto + Stars mode");
   }
 });
+
+Promise.all([
+  telegram(GATEWAY_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
+  telegram(SUBSCRIPTION_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
+]).catch((error) => console.error("Webhook cleanup failed:", error.message));
 
 setInterval(() => checkPayments().catch(console.error), 30_000);
 setInterval(() => expireSubscriptions().catch(console.error), 60_000);
