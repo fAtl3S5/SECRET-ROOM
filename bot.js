@@ -18,6 +18,7 @@ const MAIN_CHANNEL_URL = process.env.MAIN_CHANNEL_URL || "https://t.me/+4H3FZze1
 const SAFE_CHANNEL_URL = process.env.SAFE_CHANNEL_URL || "https://t.me/blessedbabes";
 const SUBSCRIPTION_BOT_URL = process.env.SUBSCRIPTION_BOT_URL || "https://t.me/srprivatee_bot?start=gateway";
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+const WELCOME_GIF_URL = process.env.WELCOME_GIF_URL || "https://raw.githubusercontent.com/fAtl3S5/SECRET-ROOM/main/assets/secret-room-welcome.gif";
 const PORT = Number(process.env.PORT || 3000);
 const DATA_FILE = resolve(process.env.DATA_FILE || "./data/subscriptions.json");
 const BIGPAY_API_BASE = "https://bigpay.site/api";
@@ -203,6 +204,15 @@ async function sendPlans(chatId, messageId) {
     "",
     "После выбора периода предложим способ оплаты.",
   ].join("\n");
+  if (!messageId) {
+    await telegram(SUBSCRIPTION_TOKEN, "sendAnimation", {
+      chat_id: chatId,
+      animation: WELCOME_GIF_URL,
+      caption: text,
+      reply_markup: { inline_keyboard: plansKeyboard() },
+    });
+    return;
+  }
   await showMenu(chatId, text, plansKeyboard(), messageId);
 }
 
