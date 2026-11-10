@@ -205,12 +205,17 @@ async function sendPlans(chatId, messageId) {
     "После выбора периода предложим способ оплаты.",
   ].join("\n");
   if (!messageId) {
-    await telegram(SUBSCRIPTION_TOKEN, "sendAnimation", {
-      chat_id: chatId,
-      animation: WELCOME_GIF_URL,
-      caption: text,
-      reply_markup: { inline_keyboard: plansKeyboard() },
-    });
+    try {
+      await telegram(SUBSCRIPTION_TOKEN, "sendAnimation", {
+        chat_id: chatId,
+        animation: WELCOME_GIF_URL,
+        caption: text,
+        reply_markup: { inline_keyboard: plansKeyboard() },
+      });
+    } catch (error) {
+      console.error("Welcome animation failed; sending text menu:", error.message);
+      await showMenu(chatId, text, plansKeyboard());
+    }
     return;
   }
   await showMenu(chatId, text, plansKeyboard(), messageId);
