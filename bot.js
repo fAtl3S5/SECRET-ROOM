@@ -17,7 +17,7 @@ const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
 const MAIN_CHANNEL_URL = process.env.MAIN_CHANNEL_URL || "https://t.me/+4H3FZze1XTdiMmJi";
 const SAFE_CHANNEL_URL = process.env.SAFE_CHANNEL_URL || "https://t.me/blessedbabes";
 const SUBSCRIPTION_BOT_URL = process.env.SUBSCRIPTION_BOT_URL || "https://t.me/srprivatee_bot?start=gateway";
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://secret-room-bot-qs4c.onrender.com").replace(/\/$/, "");
 const WELCOME_GIF_URL = process.env.WELCOME_GIF_URL || "https://raw.githubusercontent.com/fAtl3S5/SECRET-ROOM/main/assets/secret-room-welcome.gif";
 const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 const PORT = Number(process.env.PORT || 3000);
