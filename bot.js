@@ -19,6 +19,7 @@ const SAFE_CHANNEL_URL = process.env.SAFE_CHANNEL_URL || "https://t.me/blessedba
 const SUBSCRIPTION_BOT_URL = process.env.SUBSCRIPTION_BOT_URL || "https://t.me/srprivatee_bot?start=gateway";
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
 const WELCOME_GIF_URL = process.env.WELCOME_GIF_URL || "https://raw.githubusercontent.com/fAtl3S5/SECRET-ROOM/main/assets/secret-room-welcome.gif";
+const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 const PORT = Number(process.env.PORT || 3000);
 const DATA_FILE = resolve(process.env.DATA_FILE || "./data/subscriptions.json");
 const BIGPAY_API_BASE = "https://bigpay.site/api";
@@ -743,10 +744,59 @@ async function handleBigPayWebhook(request, response, pathSecret) {
   }
 }
 
+function telegramWebhookPath(kind) {
+  const suffix = TELEGRAM_WEBHOOK_SECRET
+    ? `/${encodeURIComponent(TELEGRAM_WEBHOOK_SECRET)}`
+    : "";
+  return `/telegram/${kind}${suffix}`;
+}
+
+async function handleTelegramWebhook(request, response, handler) {
+  try {
+    const raw = await readRequestBody(request, 2_000_000);
+    const update = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+    await handler(update);
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: true }));
+  } catch (error) {
+    console.error("Telegram webhook failed:", error.message);
+    response.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ok: false }));
+  }
+}
+
+async function configureTelegramWebhooks() {
+  if (!PUBLIC_BASE_URL) return false;
+  const gatewayUrl = `${PUBLIC_BASE_URL}${telegramWebhookPath("gateway")}`;
+  const subscriptionUrl = `${PUBLIC_BASE_URL}${telegramWebhookPath("subscription")}`;
+  const common = {
+    allowed_updates: ["message", "callback_query", "pre_checkout_query"],
+    drop_pending_updates: false,
+  };
+  const secret = TELEGRAM_WEBHOOK_SECRET ? { secret_token: TELEGRAM_WEBHOOK_SECRET } : {};
+  await Promise.all([
+    telegram(GATEWAY_TOKEN, "setWebhook", { ...common, ...secret, url: gatewayUrl }),
+    telegram(SUBSCRIPTION_TOKEN, "setWebhook", { ...common, ...secret, url: subscriptionUrl }),
+  ]);
+  console.log(`Telegram webhooks enabled: ${gatewayUrl}, ${subscriptionUrl}`);
+  return true;
+}
+
 function createHttpServer() {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
     const webhookBase = "/bigpay/webhook";
+    const gatewayTelegramPath = telegramWebhookPath("gateway");
+    const subscriptionTelegramPath = telegramWebhookPath("subscription");
+
+    if (request.method === "POST" && url.pathname === gatewayTelegramPath) {
+      await handleTelegramWebhook(request, response, handleGatewayUpdate);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === subscriptionTelegramPath) {
+      await handleTelegramWebhook(request, response, handleSubscriptionUpdate);
+      return;
+    }
 
     if (request.method === "POST" && (url.pathname === webhookBase || url.pathname.startsWith(`${webhookBase}/`))) {
       const pathSecret = url.pathname === webhookBase
@@ -786,14 +836,18 @@ createHttpServer().listen(PORT, "0.0.0.0", () => {
   }
 });
 
-Promise.all([
-  telegram(GATEWAY_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
-  telegram(SUBSCRIPTION_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
-]).catch((error) => console.error("Webhook cleanup failed:", error.message));
+if (PUBLIC_BASE_URL) {
+  configureTelegramWebhooks().catch((error) => console.error("Webhook setup failed:", error.message));
+} else {
+  Promise.all([
+    telegram(GATEWAY_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
+    telegram(SUBSCRIPTION_TOKEN, "deleteWebhook", { drop_pending_updates: false }),
+  ]).catch((error) => console.error("Webhook cleanup failed:", error.message));
+  pollingLoop(GATEWAY_TOKEN, handleGatewayUpdate, "gateway");
+  pollingLoop(SUBSCRIPTION_TOKEN, handleSubscriptionUpdate, "subscription");
+}
 
 setInterval(() => checkPayments().catch(console.error), 30_000);
 setInterval(() => expireSubscriptions().catch(console.error), 60_000);
 checkPayments().catch(console.error);
 expireSubscriptions().catch(console.error);
-pollingLoop(GATEWAY_TOKEN, handleGatewayUpdate, "gateway");
-pollingLoop(SUBSCRIPTION_TOKEN, handleSubscriptionUpdate, "subscription");
