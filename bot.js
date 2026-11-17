@@ -34,9 +34,41 @@ const PLANS = {
   lifetime: { title: "Навсегда", usd: "35", rub: 2990, xtr: 1750, ms: null },
 };
 
-const BACK_PLANS = { text: "« Назад", callback_data: "nav:plans" };
+function localize(userId, ru, en) {
+  return state.languages[userId] === "en" ? en : ru;
+}
 
-let state = { orders: {}, access: {} };
+function planTitle(userId, plan) {
+  const titles = { "7 дней": "7 days", "Месяц": "1 month", "3 месяца": "3 months", "Навсегда": "Lifetime" };
+  return localize(userId, plan.title, titles[plan.title]);
+}
+
+function languageRow(userId) {
+  return [{ text: localize(userId, "🌐 English", "🌐 Русский"), callback_data: localize(userId, "lang:en", "lang:ru") }];
+}
+
+async function handleLanguageUpdate(update, token, render) {
+  const query = update.callback_query;
+  const match = /^lang:(ru|en)$/.exec(query?.data || "");
+  if (match && query.message?.chat?.type === "private" && query.message.chat.id === query.from.id) {
+    state.languages[query.from.id] = match[1];
+    await saveState();
+    await telegram(token, "answerCallbackQuery", { callback_query_id: query.id });
+    await render(query.from.id);
+    return true;
+  }
+  const message = update.message;
+  if (message?.chat?.type === "private" && /^\/language(?:@\w+)?(?:\s|$)/i.test(message.text || "")) {
+    await telegram(token, "sendMessage", {
+      chat_id: message.chat.id, text: "Выбери язык / Choose your language:",
+      reply_markup: { inline_keyboard: [[{ text: "Русский", callback_data: "lang:ru" }, { text: "English", callback_data: "lang:en" }]] },
+    });
+    return true;
+  }
+  return false;
+}
+
+let state = { orders: {}, access: {}, languages: {} };
 let writeQueue = Promise.resolve();
 let lockHandle;
 
@@ -67,7 +99,7 @@ async function acquireProcessLock() {
 async function loadState() {
   try {
     const parsed = JSON.parse(await readFile(DATA_FILE, "utf8"));
-    state = { orders: parsed.orders || {}, access: parsed.access || {} };
+    state = { orders: parsed.orders || {}, access: parsed.access || {}, languages: parsed.languages || {} };
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
     await saveState();
@@ -131,30 +163,31 @@ function bigPayWebhookPath() {
     : "/bigpay/webhook";
 }
 
-function plansKeyboard() {
+function plansKeyboard(chatId) {
   return Object.entries(PLANS).map(([id, plan]) => [{
-    text: plan.title,
+    text: planTitle(chatId, plan),
     callback_data: `buy:${id}`,
-  }]);
+  }]).concat([languageRow(chatId)]);
 }
 
-function paymentMethodsKeyboard(planId) {
+function paymentMethodsKeyboard(planId, chatId) {
   const rows = [];
-  if (CRYPTO_ENABLED) rows.push([{ text: "Крипта", callback_data: `pay:crypto:${planId}` }]);
+  if (CRYPTO_ENABLED) rows.push([{ text: localize(chatId, "Крипта", "Crypto"), callback_data: `pay:crypto:${planId}` }]);
   if (BIGPAY_ENABLED) {
-    rows.push([{ text: "Рубли / СБП", callback_data: `nav:rub:${planId}` }]);
+    rows.push([{ text: localize(chatId, "Рубли / СБП", "Rubles / SBP"), callback_data: `nav:rub:${planId}` }]);
   }
   rows.push([{ text: "Telegram Stars", callback_data: `pay:stars:${planId}` }]);
-  rows.push([BACK_PLANS]);
+  rows.push([{ text: localize(chatId, "« Назад", "« Back"), callback_data: "nav:plans" }]);
+  rows.push(languageRow(chatId));
   return rows;
 }
 
-function rubMethodsKeyboard(planId) {
+function rubMethodsKeyboard(planId, chatId) {
   return [
-    [{ text: "СБП", callback_data: `pay:sbp:${planId}` }],
-    [{ text: "Карта", callback_data: `pay:stripe:${planId}` }],
-    [{ text: "Другие методы", callback_data: `pay:bigpay:${planId}` }],
-    [{ text: "« Назад", callback_data: `nav:pay:${planId}` }],
+    [{ text: localize(chatId, "СБП", "SBP"), callback_data: `pay:sbp:${planId}` }],
+    [{ text: localize(chatId, "Карта", "Card"), callback_data: `pay:stripe:${planId}` }],
+    [{ text: localize(chatId, "Другие методы", "Other methods"), callback_data: `pay:bigpay:${planId}` }],
+    [{ text: localize(chatId, "« Назад", "« Back"), callback_data: `nav:pay:${planId}` }],
   ];
 }
 
@@ -183,28 +216,29 @@ async function showMenu(chatId, text, keyboard, messageId) {
 
 async function sendGatewayMenu(chatId) {
   await telegram(GATEWAY_TOKEN, "sendMessage", {
-    chat_id: chatId, text: "🔐 SECRET ROOM\n\nВыбери, куда перейти:", link_preview_options: { is_disabled: true },
+    chat_id: chatId, text: localize(chatId, "🔐 SECRET ROOM\n\nВыбери, куда перейти:", "🔐 SECRET ROOM\n\nChoose where to go:"), link_preview_options: { is_disabled: true },
     reply_markup: { inline_keyboard: [
-      [{ text: "🔐 Войти в канал", url: MAIN_CHANNEL_URL }],
-      [{ text: "✨ Канал без 18+", url: SAFE_CHANNEL_URL }],
-      [{ text: "🔒 PRIVATE КАНАЛ", url: SUBSCRIPTION_BOT_URL }],
+      [{ text: localize(chatId, "🔐 Войти в канал", "🔐 Join the channel"), url: MAIN_CHANNEL_URL }],
+      [{ text: localize(chatId, "✨ Канал без 18+", "✨ Non-adult channel"), url: SAFE_CHANNEL_URL }],
+      [{ text: localize(chatId, "🔒 PRIVATE КАНАЛ", "🔒 PRIVATE CHANNEL"), url: SUBSCRIPTION_BOT_URL }],
+      languageRow(chatId),
     ] },
   });
 }
 
 async function sendPlans(chatId, messageId) {
   const priceLines = Object.values(PLANS).map(
-    (plan) => `• ${plan.title} — ${plan.rub} ₽`,
+    (plan) => `• ${planTitle(chatId, plan)} — ${plan.rub} ₽`,
   );
   const text = [
     "🔐 SECRET ROOM",
     "",
-    "Добро пожаловать в закрытый канал.",
-    "Выбери подходящий срок доступа:",
+    localize(chatId, "Добро пожаловать в закрытый канал.", "Welcome to the private channel."),
+    localize(chatId, "Выбери подходящий срок доступа:", "Choose your access duration:"),
     "",
     ...priceLines,
     "",
-    "После выбора тарифа выбери способ оплаты.",
+    localize(chatId, "После выбора тарифа выбери способ оплаты.", "Select a plan, then choose a payment method."),
   ].join("\n");
   if (!messageId) {
     try {
@@ -212,26 +246,26 @@ async function sendPlans(chatId, messageId) {
         chat_id: chatId,
         animation: WELCOME_GIF_URL,
         caption: text,
-        reply_markup: { inline_keyboard: plansKeyboard() },
+        reply_markup: { inline_keyboard: plansKeyboard(chatId) },
       });
     } catch (error) {
       console.error("Welcome animation failed; sending text menu:", error.message);
-      await showMenu(chatId, text, plansKeyboard());
+      await showMenu(chatId, text, plansKeyboard(chatId));
     }
     return;
   }
-  await showMenu(chatId, text, plansKeyboard(), messageId);
+  await showMenu(chatId, text, plansKeyboard(chatId), messageId);
 }
 
 async function sendPaymentMethodChoice(chatId, planId, messageId) {
   const plan = PLANS[planId];
   if (!plan) throw new Error("Unknown plan");
   const text = [
-    `🔐 SECRET ROOM · ${plan.title}`,
+    `🔐 SECRET ROOM · ${planTitle(chatId, plan)}`,
     "",
-    "Выбери способ оплаты:",
+    localize(chatId, "Выбери способ оплаты:", "Choose a payment method:"),
   ].join("\n");
-  await showMenu(chatId, text, paymentMethodsKeyboard(planId), messageId);
+  await showMenu(chatId, text, paymentMethodsKeyboard(planId, chatId), messageId);
 }
 
 async function sendRubMethodChoice(chatId, planId, messageId) {
@@ -239,12 +273,12 @@ async function sendRubMethodChoice(chatId, planId, messageId) {
   if (!plan) throw new Error("Unknown plan");
   if (!BIGPAY_ENABLED) throw new Error("BigPay is not configured");
   const text = [
-    `🔐 SECRET ROOM · ${plan.title}`,
-    `Сумма: ${plan.rub} ₽`,
+    `🔐 SECRET ROOM · ${planTitle(chatId, plan)}`,
+    localize(chatId, `Сумма: ${plan.rub} ₽`, `Amount: ${plan.rub} RUB`),
     "",
-    "Выбери способ оплаты в рублях:",
+    localize(chatId, "Выбери способ оплаты в рублях:", "Choose a payment method in rubles:"),
   ].join("\n");
-  await showMenu(chatId, text, rubMethodsKeyboard(planId), messageId);
+  await showMenu(chatId, text, rubMethodsKeyboard(planId, chatId), messageId);
 }
 
 async function createCryptoInvoice(userId, planId) {
@@ -254,7 +288,7 @@ async function createCryptoInvoice(userId, planId) {
   const invoice = await cryptoPay("createInvoice", {
     currency_type: "fiat", fiat: "USD", amount: plan.usd,
     accepted_assets: "USDT,TON,BTC,ETH,LTC,BNB,TRX,USDC",
-    description: `SECRET ROOM · ${plan.title}`, payload: orderId,
+    description: `SECRET ROOM · ${planTitle(userId, plan)}`, payload: orderId,
     allow_anonymous: false, allow_comments: false, expires_in: 3600,
   });
   state.orders[orderId] = {
@@ -282,12 +316,12 @@ async function createStarsInvoice(userId, planId) {
   await saveState();
   await telegram(SUBSCRIPTION_TOKEN, "sendInvoice", {
     chat_id: userId,
-    title: `SECRET ROOM · ${plan.title}`,
-    description: `Подписка SECRET ROOM (${plan.title}). После оплаты доступ придёт автоматически.`,
+    title: `SECRET ROOM · ${planTitle(userId, plan)}`,
+    description: localize(userId, `Подписка SECRET ROOM (${planTitle(userId, plan)}). После оплаты доступ придёт автоматически.`, `SECRET ROOM subscription (${planTitle(userId, plan)}). Access will be sent automatically after payment.`),
     payload: orderId,
     currency: "XTR",
     provider_token: "",
-    prices: [{ label: plan.title, amount: plan.xtr }],
+    prices: [{ label: planTitle(userId, plan), amount: plan.xtr }],
   });
   return orderId;
 }
@@ -318,7 +352,7 @@ async function createBigPayInvoice(userId, planId, method = "paylink") {
   const body = {
     amount: plan.rub,
     currency: "RUB",
-    description: `SECRET ROOM · ${plan.title}`,
+    description: `SECRET ROOM · ${planTitle(userId, plan)}`,
     ttlMinutes: 60,
     metadata: { orderId, userId: String(userId), planId, method },
   };
@@ -328,8 +362,8 @@ async function createBigPayInvoice(userId, planId, method = "paylink") {
     await storeBigPayOrder({ orderId, payment, userId, planId, method: "stripe" });
     return {
       url: payment.paylink || payment.requisites?.value || bigPayPayUrl(payment.paylink),
-      button: "Оплатить картой",
-      hint: "Оплата картой через Stripe Checkout.",
+      button: localize(userId, "Оплатить картой", "Pay by card"),
+      hint: localize(userId, "Оплата картой через Stripe Checkout.", "Card payment via Stripe Checkout."),
     };
   }
 
@@ -343,22 +377,22 @@ async function createBigPayInvoice(userId, planId, method = "paylink") {
     if (sbpValue && /^https?:\/\//i.test(sbpValue)) {
       return {
         url: sbpValue,
-        button: "Оплатить через СБП",
-        hint: "Прямая оплата через СБП. После перевода доступ придёт автоматически.",
+        button: localize(userId, "Оплатить через СБП", "Pay via SBP"),
+        hint: localize(userId, "Прямая оплата через СБП. После перевода доступ придёт автоматически.", "Pay directly via SBP. Access will be sent automatically after payment."),
       };
     }
     // Fallback to chooser paylink if requisites are not a clickable URL.
     return {
       url: bigPayPayUrl(detailed?.paylink || payment.paylink),
-      button: "Оплатить через СБП",
-      hint: "Открой страницу оплаты и выбери СБП.",
+      button: localize(userId, "Оплатить через СБП", "Pay via SBP"),
+      hint: localize(userId, "Открой страницу оплаты и выбери СБП.", "Open the payment page and select SBP."),
     };
   }
 
   return {
     url: bigPayPayUrl(payment.paylink),
-    button: "Оплатить в ₽",
-    hint: "На странице BigPay доступны СБП и другие включённые для магазина методы (карта — через Stripe, если подключён).",
+    button: localize(userId, "Оплатить в ₽", "Pay in RUB"),
+    hint: localize(userId, "На странице BigPay доступны СБП и другие включённые для магазина методы (карта — через Stripe, если подключён).", "The BigPay page offers SBP and other enabled payment methods (cards via Stripe, if available)."),
   };
 }
 
@@ -376,8 +410,8 @@ async function activateOrder(order) {
       expire_date: Math.floor(Date.now() / 1000) + 86400, member_limit: 1,
     });
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
-      chat_id: order.userId, text: `✅ Оплата получена. Доступ в SECRET ROOM (${plan.title}):`,
-      reply_markup: { inline_keyboard: [[{ text: "Войти в канал", url: invite.invite_link }]] },
+      chat_id: order.userId, text: localize(order.userId, `✅ Оплата получена. Доступ в SECRET ROOM (${planTitle(order.userId, plan)}):`, `✅ Payment received. Your SECRET ROOM access (${planTitle(order.userId, plan)}):`),
+      reply_markup: { inline_keyboard: [[{ text: localize(order.userId, "Войти в канал", "Join the channel"), url: invite.invite_link }]] },
     });
     state.access[order.userId] = { expiresAt, lifetime, status: "active", updatedAt: Date.now() };
     order.status = "fulfilled";
@@ -458,7 +492,7 @@ async function expireSubscriptions() {
       await telegram(SUBSCRIPTION_TOKEN, "banChatMember", { chat_id: PAID_CHANNEL_ID, user_id: Number(userId) });
       await telegram(SUBSCRIPTION_TOKEN, "unbanChatMember", { chat_id: PAID_CHANNEL_ID, user_id: Number(userId), only_if_banned: true });
       access.status = "expired";
-      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: Number(userId), text: "Срок подписки SECRET ROOM закончился. Для продления выбери новый тариф: /start" }).catch(() => {});
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: Number(userId), text: localize(userId, "Срок подписки SECRET ROOM закончился. Для продления выбери новый тариф: /start", "Your SECRET ROOM subscription has expired. To renew, choose a plan: /start") }).catch(() => {});
     } catch (error) {
       access.status = "active";
       console.error("Expiry failed:", error.message);
@@ -468,6 +502,7 @@ async function expireSubscriptions() {
 }
 
 async function handleGatewayUpdate(update) {
+  if (await handleLanguageUpdate(update, GATEWAY_TOKEN, sendGatewayMenu)) return;
   const message = update.message;
   if (message?.chat?.type === "private" && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text || "")) await sendGatewayMenu(message.chat.id);
 }
@@ -507,7 +542,7 @@ async function handlePreCheckoutQuery(query) {
     await telegram(SUBSCRIPTION_TOKEN, "answerPreCheckoutQuery", {
       pre_checkout_query_id: query.id,
       ok: false,
-      error_message: "Счёт устарел или не найден. Начни заново: /start",
+      error_message: localize(query.from.id, "Счёт устарел или не найден. Начни заново: /start", "This invoice has expired or could not be found. Start again: /start"),
     });
     return;
   }
@@ -519,6 +554,7 @@ async function handlePreCheckoutQuery(query) {
 }
 
 async function handleSubscriptionUpdate(update) {
+  if (await handleLanguageUpdate(update, SUBSCRIPTION_TOKEN, sendPlans)) return;
   if (update.pre_checkout_query) {
     await handlePreCheckoutQuery(update.pre_checkout_query);
     return;
@@ -564,7 +600,7 @@ async function handleSubscriptionUpdate(update) {
       await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
       await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
         chat_id: chatId,
-        text: "Оплата в рублях сейчас недоступна. Выбери другой способ.",
+        text: localize(chatId, "Оплата в рублях сейчас недоступна. Выбери другой способ.", "Rubles payments are currently unavailable. Choose another method."),
       });
     }
     return;
@@ -578,7 +614,7 @@ async function handleSubscriptionUpdate(update) {
     } catch (error) {
       console.error("Plan selection failed:", error.message);
       await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
-      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: chatId, text: "Не удалось открыть оплату. Попробуй немного позже." });
+      await telegram(SUBSCRIPTION_TOKEN, "sendMessage", { chat_id: chatId, text: localize(chatId, "Не удалось открыть оплату. Попробуй немного позже.", "Could not open payment. Please try again later.") });
     }
     return;
   }
@@ -587,7 +623,7 @@ async function handleSubscriptionUpdate(update) {
   if (!payMatch) return;
 
   const [, provider, planId] = payMatch;
-  await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: "Создаю счёт…" });
+  await telegram(SUBSCRIPTION_TOKEN, "answerCallbackQuery", { callback_query_id: query.id, text: localize(chatId, "Создаю счёт…", "Creating invoice…") });
   try {
     if (provider === "stars") {
       await createStarsInvoice(query.from.id, planId);
@@ -598,10 +634,10 @@ async function handleSubscriptionUpdate(update) {
       const url = await createCryptoInvoice(query.from.id, planId);
       await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
         chat_id: query.from.id,
-        text: `SECRET ROOM · ${PLANS[planId].title}\nЦена: $${PLANS[planId].usd}. После оплаты доступ придёт автоматически.`,
+        text: localize(chatId, `SECRET ROOM · ${planTitle(chatId, PLANS[planId])}\nЦена: $${PLANS[planId].usd}. После оплаты доступ придёт автоматически.`, `SECRET ROOM · ${planTitle(chatId, PLANS[planId])}\nPrice: $${PLANS[planId].usd}. Access will be sent automatically after payment.`),
         reply_markup: { inline_keyboard: [
-          [{ text: "Оплатить криптовалютой", url }],
-          [{ text: "« Назад", callback_data: `nav:pay:${planId}` }],
+          [{ text: localize(chatId, "Оплатить криптовалютой", "Pay with crypto"), url }],
+          [{ text: localize(chatId, "« Назад", "« Back"), callback_data: `nav:pay:${planId}` }],
         ] },
       });
       return;
@@ -612,25 +648,25 @@ async function handleSubscriptionUpdate(update) {
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
       chat_id: query.from.id,
       text: [
-        `SECRET ROOM · ${PLANS[planId].title}`,
-        `Цена: ${PLANS[planId].rub} ₽.`,
+        `SECRET ROOM · ${planTitle(chatId, PLANS[planId])}`,
+        localize(chatId, `Цена: ${PLANS[planId].rub} ₽.`, `Price: ${PLANS[planId].rub} RUB.`),
         invoice.hint,
-        "После успешной оплаты доступ придёт автоматически.",
+        localize(chatId, "После успешной оплаты доступ придёт автоматически.", "Access will be sent automatically after successful payment."),
       ].join("\n"),
       reply_markup: { inline_keyboard: [
         [{ text: invoice.button, url: invoice.url }],
-        [{ text: "« Назад", callback_data: `nav:rub:${planId}` }],
+        [{ text: localize(chatId, "« Назад", "« Back"), callback_data: `nav:rub:${planId}` }],
       ] },
     });
   } catch (error) {
     console.error("Invoice creation failed:", error.message);
     const stripeHint = provider === "stripe"
-      ? " Карта через Stripe доступна только если шлюз включён у магазина BigPay."
+      ? localize(chatId, " Карта через Stripe доступна только если шлюз включён у магазина BigPay.", " Card payments via Stripe are only available if enabled by the BigPay merchant.")
       : "";
     await telegram(SUBSCRIPTION_TOKEN, "sendMessage", {
       chat_id: query.from.id,
-      text: `Не удалось создать счёт.${stripeHint} Попробуй другой способ или немного позже.`,
-      reply_markup: { inline_keyboard: [[{ text: "« Назад", callback_data: `nav:pay:${planId}` }]] },
+      text: localize(chatId, `Не удалось создать счёт.${stripeHint} Попробуй другой способ или немного позже.`, `Could not create invoice.${stripeHint} Try another method or try again later.`),
+      reply_markup: { inline_keyboard: [[{ text: localize(chatId, "« Назад", "« Back"), callback_data: `nav:pay:${planId}` }]] },
     });
   }
 }
